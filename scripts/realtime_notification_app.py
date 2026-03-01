@@ -82,10 +82,21 @@ class GemmaNotifier:
             self.enabled = False
 
     def generate(self, event: NotificationEvent) -> str:
-        fallback = (
-            "Potential fall event detected. "
-            "Please assess the patient immediately and initiate fall-response protocol."
-        )
+        if event.confidence >= 0.9:
+            fallback = (
+                f"High-confidence fall detected (confidence {event.confidence:.2f}). "
+                "Initiate immediate patient assessment and urgent response protocol."
+            )
+        elif event.confidence >= 0.8:
+            fallback = (
+                f"Likely fall detected (confidence {event.confidence:.2f}). "
+                "Please assess the patient now and apply fall-response protocol."
+            )
+        else:
+            fallback = (
+                f"Potential fall event detected (confidence {event.confidence:.2f}). "
+                "Please assess the patient promptly and continue close monitoring."
+            )
 
         if not self.enabled:
             return fallback
@@ -394,7 +405,7 @@ def run_app(video_source, config_path: str, host: str, port: int):
     notifier = GemmaNotifier(config.get("model_paths", {}).get("gemma_270m", ""))
     notif_queue = queue.Queue()
     stop_event = threading.Event()
-    fall_notified = {"value": False}
+    max_notified_conf = {"value": -1.0}
 
     def on_alert(event: FallEvent):
         notif_queue.put(
@@ -412,26 +423,40 @@ def run_app(video_source, config_path: str, host: str, port: int):
             except queue.Empty:
                 continue
 
-            # Only one fall notification per session.
-            if fall_notified["value"]:
+            # Only push an update if confidence is strictly higher than previous.
+            if event.confidence <= max_notified_conf["value"]:
                 continue
 
             message = notifier.generate(event)
             now = time.time()
             with app_state.lock:
-                app_state.notifications.insert(
-                    0,
-                    {
-                        "message": message,
-                        "confidence": round(event.confidence, 3),
-                        "severity": "critical",
-                        "ts": now,
-                    },
+                critical_idx = next(
+                    (i for i, n in enumerate(app_state.notifications)
+                     if n.get("severity") == "critical"),
+                    None,
                 )
+                payload = {
+                    "message": message,
+                    "confidence": round(event.confidence, 3),
+                    "severity": "critical",
+                    "ts": now,
+                }
+                if critical_idx is None:
+                    app_state.notifications.insert(0, payload)
+                else:
+                    app_state.notifications[critical_idx] = payload
+                    # Keep critical message pinned to top.
+                    if critical_idx != 0:
+                        app_state.notifications.insert(
+                            0, app_state.notifications.pop(critical_idx)
+                        )
                 app_state.notifications = app_state.notifications[:12]
 
-            fall_notified["value"] = True
-            logger.warning("Queued one-time critical fall notification: conf=%.3f", event.confidence)
+            max_notified_conf["value"] = event.confidence
+            logger.warning(
+                "Updated critical notification for higher confidence: %.3f",
+                event.confidence,
+            )
 
     def on_frame(frame, pose_frame):
         ok, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
