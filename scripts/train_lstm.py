@@ -231,11 +231,13 @@ def train(config_path: str = "configs/config.yaml"):
 
     # Training loop
     best_val_auc = 0
+    patience = 10
+    patience_counter = 0
     history = {"train_loss": [], "val_loss": [], "val_acc": [], "val_auc": []}
     model_path = Path(cfg["model_paths"]["lstm"])
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nTraining for {lstm_cfg['epochs']} epochs...")
+    print(f"\nTraining for {lstm_cfg['epochs']} epochs (early stopping patience={patience})...")
     print("=" * 70)
 
     for epoch in range(1, lstm_cfg["epochs"] + 1):
@@ -254,20 +256,29 @@ def train(config_path: str = "configs/config.yaml"):
         history["val_auc"].append(val_auc)
 
         lr = optimizer.param_groups[0]["lr"]
+
+        # Gap between train and val = overfitting signal
+        gap = train_acc - val_acc
         print(f"Epoch {epoch:3d} | "
               f"Train Loss: {train_loss:.4f} Acc: {train_acc:.3f} | "
               f"Val Loss: {val_loss:.4f} Acc: {val_acc:.3f} AUC: {val_auc:.3f} | "
-              f"LR: {lr:.6f}")
+              f"Gap: {gap:+.3f} | LR: {lr:.6f}")
 
         if val_auc > best_val_auc:
             best_val_auc = val_auc
+            patience_counter = 0
             torch.save({
                 "model_state_dict": model.state_dict(),
                 "config": lstm_cfg,
                 "epoch": epoch,
                 "val_auc": val_auc,
             }, model_path)
-            print(f"  → Saved best model (AUC: {val_auc:.4f})")
+            print(f"  -> Saved best model (AUC: {val_auc:.4f})")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"\nEarly stopping at epoch {epoch} (no improvement for {patience} epochs)")
+                break
 
     # Test evaluation
     print("\n" + "=" * 70)

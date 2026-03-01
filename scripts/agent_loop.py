@@ -19,6 +19,7 @@ import queue
 import logging
 import os
 import urllib.request
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Callable
@@ -38,6 +39,8 @@ logger = logging.getLogger("elderwatch")
 
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
 DEFAULT_MODEL_PATH = "models/pose_landmarker.task"
+SET1_PATTERN = re.compile(r"(^|[\\/])set1([\\/]|$)", re.IGNORECASE)
+SET2_PATTERN = re.compile(r"(^|[\\/])set2([\\/]|$)", re.IGNORECASE)
 
 
 def ensure_pose_model(model_path: str = DEFAULT_MODEL_PATH):
@@ -49,6 +52,16 @@ def ensure_pose_model(model_path: str = DEFAULT_MODEL_PATH):
     urllib.request.urlretrieve(MODEL_URL, model_path)
     print("Done.")
     return model_path
+
+
+def get_source_transforms(video_source) -> tuple[bool, float]:
+    """Return (crop_right_half, skip_seconds) based on source path."""
+    if not isinstance(video_source, str):
+        return False, 0.0
+
+    crop_right_half = SET1_PATTERN.search(video_source) is not None
+    skip_seconds = 9.0 if SET2_PATTERN.search(video_source) is not None else 0.0
+    return crop_right_half, skip_seconds
 
 
 # ─── Data Types ─────────────────────────────────────────────────────
@@ -92,6 +105,7 @@ class AgentState:
     last_movement_time: float = 0.0
     frames_processed: int = 0
     falls_detected: int = 0
+    current_fall_prob: float = 0.0
     status_message: str = "Initializing..."
 
 
@@ -186,7 +200,7 @@ class ElderWatchAgent:
 
         model_path = self.config["model_paths"]["lstm"]
         checkpoint = torch.load(model_path, map_location=self._device,
-                                weights_only=True)
+                                weights_only=False)
         self._lstm_model.load_state_dict(checkpoint["model_state_dict"])
         self._lstm_model.eval()
 
@@ -418,6 +432,7 @@ class ElderWatchAgent:
                          RTSP URL for IP camera
         """
         is_video = isinstance(video_source, str)
+        crop_right_half, skip_seconds = get_source_transforms(video_source)
         self._setup(is_video=is_video)
 
         cap = cv2.VideoCapture(video_source)
@@ -432,6 +447,19 @@ class ElderWatchAgent:
         self.state.last_movement_time = time.time()
 
         logger.info(f"Agent started | source={video_source} | fps={fps}")
+        if crop_right_half:
+            logger.info("Applying set1 transform: crop right half")
+        if is_video and skip_seconds > 0:
+            # Skip leading content for set2 sources before prediction starts.
+            cap.set(cv2.CAP_PROP_POS_MSEC, skip_seconds * 1000.0)
+            # If seeking is unsupported, manually discard frames.
+            if cap.get(cv2.CAP_PROP_POS_MSEC) < (skip_seconds * 1000.0 * 0.5):
+                frames_to_skip = int(fps * skip_seconds)
+                for _ in range(frames_to_skip):
+                    ret, _ = cap.read()
+                    if not ret:
+                        break
+            logger.info(f"Applying set2 transform: skipped first {skip_seconds:.0f}s")
 
         start_time = time.time()
 
@@ -443,6 +471,10 @@ class ElderWatchAgent:
                         logger.info("Video ended")
                         break
                     continue
+
+                if crop_right_half:
+                    h, w = frame.shape[:2]
+                    frame = frame[:, w // 2:, :]
 
                 # Compute timestamp
                 if is_video:
@@ -460,6 +492,9 @@ class ElderWatchAgent:
 
                 # Loop 2: Fall Detection
                 fall_prob = self._detect_fall()
+                self.state.current_fall_prob = (
+                    float(fall_prob) if fall_prob is not None else 0.0
+                )
                 t2 = time.perf_counter()
 
                 # Visualization callback
@@ -541,22 +576,16 @@ def run_demo(video_source, config_path: str = "configs/config.yaml"):
 
     def on_frame(frame, pose_frame: PoseFrame):
         annotated = frame.copy()
-        status = agent.state.status_message
-        alert = agent.state.current_alert
-        color = (0, 255, 0) if alert == AlertLevel.NONE else (0, 0, 255)
-
-        cv2.putText(annotated, status, (10, 30),
-                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        cv2.putText(annotated, f"Frame: {agent.state.frames_processed}",
-                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-        # Draw keypoints if detected
-        h, w = frame.shape[:2]
-        kp = pose_frame.keypoints
-        for i in range(33):
-            if kp[i, 3] > 0.5:  # visibility threshold
-                x, y = int(kp[i, 0] * w), int(kp[i, 1] * h)
-                cv2.circle(annotated, (x, y), 3, (0, 255, 255), -1)
+        confidence = agent.state.current_fall_prob
+        cv2.putText(
+            annotated,
+            f"{confidence:.3f}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 255),
+            2,
+        )
 
         cv2.imshow("ElderWatch", annotated)
         key = cv2.waitKey(1) & 0xFF

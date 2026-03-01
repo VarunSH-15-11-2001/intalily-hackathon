@@ -49,7 +49,8 @@ def ensure_model(model_path: str = DEFAULT_MODEL_PATH):
 
 
 def extract_poses_from_video(video_path: str,
-                              model_path: str = DEFAULT_MODEL_PATH
+                              model_path: str = DEFAULT_MODEL_PATH,
+                              crop_right_half: bool = False
                               ) -> tuple[np.ndarray, dict]:
     """
     Extract pose keypoints from every frame of a video.
@@ -89,6 +90,12 @@ def extract_poses_from_video(video_path: str,
                 break
 
             # Convert BGR to RGB
+            # URFall videos have depth (left) + RGB (right) side by side
+            # Crop to right half to get only the RGB view
+            if crop_right_half:
+                h, w = frame.shape[:2]
+                frame = frame[:, w // 2:, :]
+
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
@@ -128,7 +135,9 @@ def extract_poses_from_video(video_path: str,
 
 
 def process_dataset(urfall_dir: str, output_dir: str,
-                     model_path: str = DEFAULT_MODEL_PATH):
+                     model_path: str = DEFAULT_MODEL_PATH,
+                     custom_fall_dir: str = None,
+                     custom_adl_dir: str = None):
     """Process all URFall videos and save pose arrays."""
     urfall_path = Path(urfall_dir)
     output_path = Path(output_dir)
@@ -151,12 +160,14 @@ def process_dataset(urfall_dir: str, output_dir: str,
 
     all_metadata = []
 
-    # Process falls
+    # Process falls (URFall fall videos have depth+RGB side by side — crop to RGB)
     print("\n--- Processing Fall Videos ---")
+    print("    (Cropping right half — URFall fall videos have depth+RGB side by side)")
     for video_path in tqdm(fall_videos, desc="Falls"):
         try:
             poses, meta = extract_poses_from_video(
-                video_path, model_path=model_path
+                video_path, model_path=model_path,
+                crop_right_half=True  # Fall videos have dual view
             )
             meta["label"] = "fall"
             meta["label_id"] = 1
@@ -185,6 +196,58 @@ def process_dataset(urfall_dir: str, output_dir: str,
         except Exception as e:
             print(f"  ERROR processing {video_path.name}: {e}")
 
+    # Process custom fall videos (if provided)
+    if custom_fall_dir:
+        custom_path = Path(custom_fall_dir)
+        custom_videos = sorted(
+            list(custom_path.glob("*.mp4")) +
+            list(custom_path.glob("*.avi")) +
+            list(custom_path.glob("*.mov"))
+        )
+        print(f"\n--- Processing Custom Fall Videos ({len(custom_videos)}) ---")
+        for video_path in tqdm(custom_videos, desc="Custom Falls"):
+            try:
+                poses, meta = extract_poses_from_video(
+                    video_path, model_path=model_path,
+                    crop_right_half=False  # Custom videos are normal single-view
+                )
+                meta["label"] = "fall"
+                meta["label_id"] = 1
+                meta["source"] = "custom"
+
+                stem = video_path.stem
+                np.save(output_path / f"custom-{stem}_poses.npy", poses)
+                all_metadata.append(meta)
+
+            except Exception as e:
+                print(f"  ERROR processing {video_path.name}: {e}")
+
+    # Process custom ADL videos (if provided)
+    if custom_adl_dir:
+        custom_path = Path(custom_adl_dir)
+        custom_videos = sorted(
+            list(custom_path.glob("*.mp4")) +
+            list(custom_path.glob("*.avi")) +
+            list(custom_path.glob("*.mov"))
+        )
+        print(f"\n--- Processing Custom ADL Videos ({len(custom_videos)}) ---")
+        for video_path in tqdm(custom_videos, desc="Custom ADL"):
+            try:
+                poses, meta = extract_poses_from_video(
+                    video_path, model_path=model_path,
+                    crop_right_half=False
+                )
+                meta["label"] = "adl"
+                meta["label_id"] = 0
+                meta["source"] = "custom"
+
+                stem = video_path.stem
+                np.save(output_path / f"custom-{stem}_poses.npy", poses)
+                all_metadata.append(meta)
+
+            except Exception as e:
+                print(f"  ERROR processing {video_path.name}: {e}")
+
     # Save metadata
     with open(output_path / "metadata.json", "w") as f:
         json.dump(all_metadata, f, indent=2)
@@ -192,12 +255,14 @@ def process_dataset(urfall_dir: str, output_dir: str,
     # Summary
     fall_count = sum(1 for m in all_metadata if m["label"] == "fall")
     adl_count = sum(1 for m in all_metadata if m["label"] == "adl")
+    custom_count = sum(1 for m in all_metadata if m.get("source") == "custom")
     avg_detection = np.mean([m["pose_detection_rate"] for m in all_metadata])
 
     print(f"\n{'='*60}")
     print(f"Extraction complete:")
     print(f"  Falls processed:  {fall_count}")
     print(f"  ADLs processed:   {adl_count}")
+    print(f"  Custom videos:    {custom_count}")
     print(f"  Avg pose detection rate: {avg_detection:.1%}")
     print(f"  Output directory: {output_path}")
 
@@ -208,6 +273,11 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", default="data/poses")
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH,
                         help="Path to pose_landmarker.task model file")
+    parser.add_argument("--custom-fall-dir", default=None,
+                        help="Directory with your own fall videos")
+    parser.add_argument("--custom-adl-dir", default=None,
+                        help="Directory with your own non-fall videos")
     args = parser.parse_args()
 
-    process_dataset(args.urfall_dir, args.output_dir, args.model_path)
+    process_dataset(args.urfall_dir, args.output_dir, args.model_path,
+                     args.custom_fall_dir, args.custom_adl_dir)

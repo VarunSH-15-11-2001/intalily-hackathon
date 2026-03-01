@@ -18,14 +18,14 @@ pose:
 
 lstm:
   sequence_length: 30          # frames per window (1 second at 30fps)
-  stride: 5                    # sliding window stride
+  stride: 10                   # larger stride = less overlap = less redundancy
   input_size: 132              # 33 keypoints * 4 dims
-  hidden_size: 128
-  num_layers: 2
-  dropout: 0.3
-  batch_size: 32
-  learning_rate: 0.001
-  epochs: 50
+  hidden_size: 64              # reduced from 128 — less capacity
+  num_layers: 1                # reduced from 2 — simpler model
+  dropout: 0.5                 # increased from 0.3
+  batch_size: 16               # smaller batches = more noise = regularization
+  learning_rate: 0.0005        # slower learning
+  epochs: 30                   # fewer epochs, rely on early stopping
   fall_threshold: 0.7          # probability threshold for fall detection
 
 augmentation:
