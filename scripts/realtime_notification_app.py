@@ -514,6 +514,15 @@ def run_app(video_source, config_path: str, cooldown_s: float, host: str, port: 
     notifier = GemmaNotifier(config.get("model_paths", {}).get("gemma_270m", ""))
     notif_queue = queue.Queue()
     stop_event = threading.Event()
+    novelty_state = {
+        "last_conf": None,
+        "last_ts": 0.0,
+        "last_message": "",
+    }
+
+    # Only queue a new notification when it is meaningfully different.
+    min_conf_delta = 0.12
+    min_novelty_gap_s = 3.0
 
     def on_alert(event: FallEvent):
         notif_queue.put(
@@ -539,6 +548,21 @@ def run_app(video_source, config_path: str, cooldown_s: float, host: str, port: 
                     continue
 
             message = notifier.generate(event)
+
+            with app_state.lock:
+                last_conf = novelty_state["last_conf"]
+                last_ts = novelty_state["last_ts"]
+                last_message = novelty_state["last_message"]
+
+            conf_is_new = (
+                last_conf is None or abs(event.confidence - last_conf) >= min_conf_delta
+            )
+            message_is_new = message.strip() != (last_message or "").strip()
+            time_is_new = (now - last_ts) >= min_novelty_gap_s
+
+            if not (conf_is_new or message_is_new or time_is_new):
+                continue
+
             with app_state.lock:
                 app_state.notifications.insert(0, {
                     "message": message,
@@ -547,6 +571,9 @@ def run_app(video_source, config_path: str, cooldown_s: float, host: str, port: 
                 })
                 app_state.notifications = app_state.notifications[:12]
                 app_state.notification_time = now
+                novelty_state["last_conf"] = event.confidence
+                novelty_state["last_ts"] = now
+                novelty_state["last_message"] = message
             logger.warning("Queued notification: conf=%.3f", event.confidence)
 
     def on_frame(frame, pose_frame):
