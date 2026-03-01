@@ -57,16 +57,6 @@ Open in browser:
 http://127.0.0.1:8000
 ```
 
-Set-specific source behavior:
-
-```bash
-# set1 source: crops to right half
-python3 scripts/agent_loop.py --source data/set1/fall-01-cam0.mp4
-
-# set2 source: skips first 9 seconds
-python3 scripts/agent_loop.py --source data/set2/fall-01-cam0.mp4
-```
-
 ## Training Pipeline
 
 ```bash
