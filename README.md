@@ -33,22 +33,38 @@ Response Agent
  optional context assessment)
 ```
 
-## Quick Start
+## Run Commands
+
+Assuming dependencies are installed and data/models are already in place.
+
+Run core agent on webcam:
+
+Run core agent on video file:
 
 ```bash
-pip install -r requirements.txt
+python3 scripts/agent_loop.py --source data/fall-01-cam0.mp4
 ```
 
-Run on webcam:
+Run realtime notification web app (video + mobile-style alert panel):
 
 ```bash
-python scripts/agent_loop.py --source 0
+python3 scripts/realtime_notification_app.py --source data/set1/fall-01-cam0.mp4
 ```
 
-Run on video file:
+Open in browser:
 
 ```bash
-python scripts/agent_loop.py --source data/fall-01-cam0.mp4
+http://127.0.0.1:8000
+```
+
+Set-specific source behavior:
+
+```bash
+# set1 source: crops to right half
+python3 scripts/agent_loop.py --source data/set1/fall-01-cam0.mp4
+
+# set2 source: skips first 9 seconds
+python3 scripts/agent_loop.py --source data/set2/fall-01-cam0.mp4
 ```
 
 ## Training Pipeline
